@@ -3,6 +3,11 @@ import httpx
 from mcp.server.fastmcp import FastMCP
 import os
 from datetime import datetime
+from dotenv import load_dotenv
+import time
+
+#load environment variables
+load_dotenv()
 
 # Initialize FastMCP server
 mcp = FastMCP("strava")
@@ -10,19 +15,66 @@ mcp = FastMCP("strava")
 # Strava API configuration
 STRAVA_API_BASE_URL = "https://www.strava.com/api/v3"
 STRAVA_ACCESS_TOKEN = os.getenv("STRAVA_ACCESS_TOKEN")
+STRAVA_CLIENT_ID = os.getenv("STRAVA_CLIENT_ID")
+STRAVA_CLIENT_SECRET = os.getenv("STRAVA_CLIENT_SECRET")
+STRAVA_REFRESH_TOKEN = os.getenv("STRAVA_REFRESH_TOKEN")
+STRAVA_ACCESS_TOKEN = os.getenv("STRAVA_ACCESS_TOKEN")
+TOKEN_EXPIRY = 0  # Track when the token expires
+
+async def refresh_access_token() -> bool:
+    """Refresh the access token using the refresh token."""
+    global STRAVA_ACCESS_TOKEN, TOKEN_EXPIRY
+    
+    url = "https://www.strava.com/oauth/token"
+    data = {
+        "client_id": STRAVA_CLIENT_ID,
+        "client_secret": STRAVA_CLIENT_SECRET,
+        "refresh_token": STRAVA_REFRESH_TOKEN,
+        "grant_type": "refresh_token"
+    }
+    
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.post(url, data=data)
+            response.raise_for_status()
+            token_data = response.json()
+            
+            STRAVA_ACCESS_TOKEN = token_data["access_token"]
+            expiry_datetime = datetime.fromisoformat(token_data["expires_at"].replace('Z', '+00:00'))
+            TOKEN_EXPIRY = expiry_datetime.timestamp()
+            TOKEN_EXPIRY = time.time() + token_data["expires_at"]
+            return True
+        except Exception as e:
+            print(f"Error refreshing token: {e}")
+            return False
 
 async def make_strava_request(endpoint: str, params: Optional[dict] = None) -> dict[str, Any] | None:
     """Make a request to the Strava API with proper error handling."""
-    headers = {
-        "Authorization": f"Bearer {STRAVA_ACCESS_TOKEN}",
-        "Accept": "application/json"
-    }
+    global STRAVA_ACCESS_TOKEN
+        
+    if not STRAVA_ACCESS_TOKEN:
+        print("Error: STRAVA_ACCESS_TOKEN not found in environment variables")
+        return None
+        
+    # Check if token needs refresh
+    if time.time() >= TOKEN_EXPIRY:
+        success = await refresh_access_token()
+        if not success:
+            print("Failed to refresh token")
+            return None
+        
+    # Initialize params if None
+    if params is None:
+        params = {}
+    
+    # Add access_token to params
+    params['access_token'] = STRAVA_ACCESS_TOKEN
     
     url = f"{STRAVA_API_BASE_URL}/{endpoint}"
     
     async with httpx.AsyncClient() as client:
         try:
-            response = await client.get(url, headers=headers, params=params, timeout=30.0)
+            response = await client.get(url, params=params, timeout=30.0)
             response.raise_for_status()
             return response.json()
         except httpx.HTTPStatusError as e:
@@ -30,7 +82,7 @@ async def make_strava_request(endpoint: str, params: Optional[dict] = None) -> d
             return None
         except Exception as e:
             print(f"An error occurred: {e}")
-            return None
+            return None 
 
 def format_activity(activity: dict) -> str:
     """Format an activity into a readable string."""
